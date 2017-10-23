@@ -10,11 +10,9 @@
 #define MMFILE_H
 #include <string>
 
-enum file_mode{
-    trunc = 0x1,
-    normal = 0x2
-};
-
+#ifdef _WIN32
+#include <Windows.h>
+#endif //_WIN32
 
 class MmFile {
 public:
@@ -28,7 +26,7 @@ public:
     //  is greater than 0 and maps the file. The function does a
     //  cleanup on error
     // --------------------------------------------------------------
-    bool fastMap(std::string const &filepath, file_mode const mode = normal, bool const write = false,
+    bool fastMap(std::string const &filepath, bool const write = false,
                  unsigned long const size = 0);
 
     // --------------------------------------------------------------
@@ -36,7 +34,7 @@ public:
     //  This function opens a file from the given path to map it later
     //  Mode specifies if the file should be truncated on opening
     // --------------------------------------------------------------
-    bool openFile(std::string const &filepath, file_mode const mode);
+    bool openFile(std::string const &filepath);
 
     // --------------------------------------------------------------
     // resize:
@@ -83,10 +81,19 @@ private:
     // --------------------------------------------------------------
     bool unmapMemoryMapped();
 
+	
+#ifdef _WIN32
+	HANDLE m_fileDescriptor;
+	HANDLE m_memoryMapped;
+	HANDLE m_memoryBaseHandle;
+
+	_off_t m_filesize;
+#else
     void* m_memoryMapped;
     int m_fileDescriptor;
 
     __off_t m_filesize;
+#endif //_WIN32
     bool m_mapped;
     bool m_opened;
 };

@@ -14,7 +14,12 @@ struct data_struct{
 
 using namespace std;
 
+#ifdef _WIN32
+
+static const string testfile = "C:/Users/Johannes/test.dat";
+#else
 static const string testfile = "/tmp/test.dat";
+#endif //_WIN32
 static const unsigned long new_file_size = sizeof(data_struct) * 1;
 static const data_struct test_data = {false, 'H', 25, 2390.0001f, 230.00000038, "Dies ist ein Teststring"};
 
@@ -26,7 +31,7 @@ int main() {
 
     MmFile file;
 
-    if (!file.openFile(testfile, file_mode::trunc)){
+    if (!file.openFile(testfile)){
         cerr << "[ERROR] could not create file: " << testfile << endl;
         return EXIT_FAILURE;
     }

@@ -8,16 +8,28 @@
 
 #include "MmFile.h"
 #include "condReturn.h"
+
+#ifndef _WIN32
+	// includes for linux / unix
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#endif //_WIN32
+
 #define GOTO_COND(x0, x1) if(x0) goto x1;
 
-
+#ifdef _WIN32
+// windows code
+MmFile::MmFile() : m_mapped(false), m_opened(false), m_filesize(0),
+					m_fileDescriptor(INVALID_HANDLE_VALUE), m_memoryMapped(INVALID_HANDLE_VALUE),
+					m_memoryBaseHandle(INVALID_HANDLE_VALUE) {}
+#else
+// unix code
 MmFile::MmFile(): m_mapped(false), m_opened(false), m_filesize(0),
                   m_fileDescriptor(0), m_memoryMapped(nullptr) {}
+#endif //_WIN32
 
 MmFile::~MmFile() {
 
@@ -25,12 +37,12 @@ MmFile::~MmFile() {
     this->closeFile(false);
 }
 
-bool MmFile::fastMap(std::string const &filepath, file_mode const mode, const bool write, const unsigned long size) {
+bool MmFile::fastMap(std::string const &filepath, const bool write, const unsigned long size) {
 
     bool success = true;
 
     //open the file
-    success = this->openFile(filepath, mode);
+    success = this->openFile(filepath);
 
     //on error goto error section
     GOTO_COND(!success, fastOpenError)
@@ -58,22 +70,35 @@ fastOpenError:
 
     return false;
 }
-
-bool MmFile::openFile(std::string const &filepath, file_mode const mode) {
+//TODO: Remove mode
+bool MmFile::openFile(std::string const &filepath) {
 
     //check if the filepath is set
-    RETURN_FALSE_COND(filepath.empty())
-    //check if a file is already open
-    RETURN_FALSE_COND(this->m_opened)
-    //check if a file is already mapped
-    RETURN_FALSE_COND(this->m_mapped)
+	RETURN_FALSE_COND(filepath.empty())
+	//check if a file is already open
+	RETURN_FALSE_COND(this->m_opened)
+	//check if a file is already mapped
+	RETURN_FALSE_COND(this->m_mapped)
+
+#ifdef _WIN32
+	// windows code
+
+	// get the Handle to the file
+	this->m_fileDescriptor = CreateFile(filepath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, 0, 0);
+	
+	// check if the file created successful
+	if (this->m_fileDescriptor == NULL || this->m_fileDescriptor == INVALID_HANDLE_VALUE) {
+		this->m_fileDescriptor = INVALID_HANDLE_VALUE;
+		return false;
+	}
+
+	// get the filesize
+	this->m_filesize = GetFileSize(this->m_fileDescriptor, NULL);
+#else
+	// unix code
 
     // setup flags with standard create and read write
     int file_flags = O_CREAT | O_RDWR;
-
-    // check if file should be truncated
-    if(mode & file_mode::trunc)
-        file_flags |= O_TRUNC;
 
     errno = 0;
 
@@ -103,6 +128,8 @@ bool MmFile::openFile(std::string const &filepath, file_mode const mode) {
 
     // set the filesize and also the opened flag
     this->m_filesize = file_stats.st_size;
+
+#endif // _Win32
     this->m_opened = true;
 
     return true;
@@ -111,14 +138,36 @@ bool MmFile::openFile(std::string const &filepath, file_mode const mode) {
 bool MmFile::resize(unsigned long const size) {
 
     // check if the file is open
-    RETURN_FALSE_COND(!this->m_opened)
-    // check if the file is mapped
-    RETURN_FALSE_COND(this->m_mapped)
+	RETURN_FALSE_COND(!this->m_opened)
+	// check if the file is mapped
+	RETURN_FALSE_COND(this->m_mapped)
 
-    bool success = (ftruncate(this->m_fileDescriptor, size) != -1);
+	bool success = false;
 
-    // return if failed
-    RETURN_FALSE_COND(!success)
+#ifdef _WIN32
+	// windows code
+
+	// set the pointer to the new end
+	success = SetFilePointer(this->m_fileDescriptor, size, NULL, FILE_BEGIN);
+
+	// RETURN IF FAILED
+	RETURN_FALSE_COND(!success)
+
+	// save the new file size
+	success = SetEndOfFile(this->m_fileDescriptor);
+
+	// reset the position to the beginning
+	SetFilePointer(this->m_fileDescriptor, 0, 0, FILE_BEGIN);
+#else
+	// unix code
+
+	// truncate file
+    success = (ftruncate(this->m_fileDescriptor, size) != -1);
+    
+#endif // _WIN32
+
+	// return if failed
+	RETURN_FALSE_COND(!success)
 
     this->m_filesize = size;
 
@@ -142,12 +191,22 @@ bool MmFile::closeFile(bool const explicitSync) {
         // unmap memory
         this->unmapMemoryMapped();
     }
+#ifdef _WIN32
+	// windows code
+
+	//close handle
+	success = CloseHandle(this->m_fileDescriptor);
+
+	this->m_fileDescriptor = INVALID_HANDLE_VALUE;
+#else
+	// unix code
 
     // close the file handle
     success = (close(this->m_fileDescriptor) != -1);
-
+	this->m_fileDescriptor = 0;
+#endif //_WIN32
     // reset the variables since no file is loaded
-    this->m_fileDescriptor = 0;
+    
     this->m_opened = false;
     this->m_filesize = 0;
 
@@ -157,10 +216,28 @@ bool MmFile::closeFile(bool const explicitSync) {
 bool MmFile::map(bool const write) {
 
     // check if file was opened
-    RETURN_FALSE_COND(!this->m_opened)
-    // check if file was already mapped
-    RETURN_FALSE_COND(this->m_mapped)
+	RETURN_FALSE_COND(!this->m_opened)
+	// check if file was already mapped
+	RETURN_FALSE_COND(this->m_mapped)
 
+	bool success = true;
+#ifdef _WIN32
+	// windows code
+
+	// create the mapping
+	this->m_memoryMapped = CreateFileMapping(this->m_fileDescriptor, 0, ((write) ? (PAGE_READWRITE) : (PAGE_READONLY)), 0, this->m_filesize, 0);
+
+	//  check the handle
+	if (this->m_memoryMapped == NULL || this->m_memoryMapped == INVALID_HANDLE_VALUE)
+		success = false;
+	
+	// create the view of the mapping
+	this->m_memoryBaseHandle = MapViewOfFile(this->m_memoryMapped, ((write) ? (FILE_MAP_WRITE) : (FILE_MAP_READ)), 0, 0, 0);
+
+	// check the handle
+	if (this->m_memoryBaseHandle == NULL || this->m_memoryBaseHandle == INVALID_HANDLE_VALUE)
+		success = false;
+#else
     // set properties
     int prot = PROT_READ | ((write) ? (PROT_WRITE) : (0x0));
 
@@ -168,8 +245,9 @@ bool MmFile::map(bool const write) {
     this->m_memoryMapped = mmap(0, this->m_filesize, prot, MAP_SHARED, this->m_fileDescriptor, 0);
 
     // check if mapping failed
-    bool success = (this->m_memoryMapped != MAP_FAILED);
+    success = (this->m_memoryMapped != MAP_FAILED);
 
+#endif //_WIN32
     // return on failure
     RETURN_FALSE_COND(!success)
 
@@ -180,33 +258,70 @@ bool MmFile::map(bool const write) {
 }
 
 void* MmFile::getMemoryMappedAddress() const {
-    return this->m_memoryMapped;;
+#ifdef _WIN32
+	// windows code
+
+	return static_cast<void *>(this->m_memoryBaseHandle);
+#else
+	// unix code
+
+    return this->m_memoryMapped;
+#endif //_WIN32
 }
 
 
 bool MmFile::syncMemoryMapped() {
 
     // check if file was mapped before
-    RETURN_FALSE_COND(!this->m_mapped)
+	RETURN_FALSE_COND(!this->m_mapped)
+
+#ifdef _WIN32
+	// windows code
+
+	// save file to disk
+	return FlushViewOfFile(this->m_memoryBaseHandle, this->m_filesize) != 0;
+#else
+	// unix code
 
     // synchronize memory in ram with file
     return (msync(this->m_memoryMapped, (size_t)this->m_filesize, MS_SYNC) != -1);
+#endif //_WIN32
 }
 
 bool MmFile::unmapMemoryMapped() {
 
     // check if the file was mapped before
-    RETURN_FALSE_COND(!this->m_mapped)
+	RETURN_FALSE_COND(!this->m_mapped)
+
+	bool success = true;
+
+#ifdef _WIN32
+	// windows code
+
+	success = UnmapViewOfFile(this->m_memoryBaseHandle);
+
+	//check and close handle
+	if (this->m_memoryBaseHandle == INVALID_HANDLE_VALUE)
+		CloseHandle(this->m_memoryBaseHandle);
+
+	// check and close handle
+	if(this->m_memoryMapped == INVALID_HANDLE_VALUE)
+		CloseHandle(this->m_memoryMapped);
+
+	// reset the variables since no file is mapped anymore
+	this->m_memoryBaseHandle = INVALID_HANDLE_VALUE;
+	this->m_memoryMapped = INVALID_HANDLE_VALUE;
+#else
+	// unix code
 
     // unmap the file and save result
-    bool success = (munmap(this->m_memoryMapped, (size_t)this->m_filesize) != -1);
+    success = (munmap(this->m_memoryMapped, (size_t)this->m_filesize) != -1);
 
-    //reset the variables since no file is mapped anymore
+	// reset the variables since no file is mapped anymore
+	this->m_memoryMapped = nullptr;
+#endif //_WIN32
+
     this->m_mapped = false;
-    this->m_memoryMapped = nullptr;
 
     return success;
 }
-
-
-
